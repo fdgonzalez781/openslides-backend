@@ -15,7 +15,6 @@ ROOT = os.path.join(
     "..",
 )
 
-
 def parse_arguments(default: str) -> Namespace:
     parser = ArgumentParser()
     parser.add_argument("filename", nargs="?", default=default)

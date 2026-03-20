@@ -2455,7 +2455,7 @@ class Poll(Model, PollModelMixin):
     )
     is_pseudoanonymized = fields.BooleanField()
     pollmethod = fields.CharField(
-        required=True, constraints={"enum": ["Y", "YN", "YNA", "N"]}
+        required=True, constraints={"enum": ["Y", "YN", "YNA", "N", "STV"]}
     )
     state = fields.CharField(
         default="created",

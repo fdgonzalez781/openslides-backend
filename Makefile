@@ -51,7 +51,7 @@ generate-schema:
 generate-db: | generate-schema create-database-with-schema
 
 generate-models:
-	python cli/generate_models.py $(MODELS_PATH)
+	python -m cli.generate_models $(MODELS_PATH)
 	black openslides_backend/models/models.py
 
 check-models:
