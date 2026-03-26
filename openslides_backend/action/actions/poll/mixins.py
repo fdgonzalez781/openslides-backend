@@ -85,6 +85,8 @@ class StopControl(CountdownControl, Action):
                 "pollmethod",
                 "global_option_id",
                 "entitled_group_ids",
+                "content_object_id",
+                "option_ids",
             ],
         )
         # reset countdown given by meeting
@@ -100,8 +102,28 @@ class StopControl(CountdownControl, Action):
         if meeting.get("poll_couple_countdown") and meeting.get("poll_countdown_id"):
             self.control_countdown(meeting["poll_countdown_id"], CountdownCommand.RESET)
 
+        self.logger.debug(
+            f"here's the instance right before it all goes wrong: {instance}"
+        )
         # stop poll in vote service and create vote objects
         results = self.vote_service.stop(instance["id"])
+        self.logger.debug(f"and here are the results: {results}")
+        if poll["pollmethod"] == "STV":
+            self.logger.debug(f"content object id: {poll['content_object_id']}")
+            assignment = self.datastore.get(
+                poll["content_object_id"],
+                ["open_posts"],
+            )
+            stv_results = self.handle_stv_election(
+                poll["option_ids"],
+                assignment["open_posts"],
+                results,
+                instance,
+                poll,
+                meeting,
+            )
+            self.logger.debug(f"here are the results from STV! {stv_results}")
+            return
         action_data = []
         votesvalid = Decimal("0.000000")
         option_results: dict[int, dict[str, Decimal]] = defaultdict(
@@ -121,6 +143,7 @@ class StopControl(CountdownControl, Action):
                 for option_id_str, value in ballot["value"].items():
                     option_id = int(option_id_str)
 
+                    self.logger.debug(f"Vote value: {value}")
                     vote_value = value
                     vote_weighted = vote_weight  # use new variable vote_weighted because pollmethod=Y/N does not imply anymore that only one loop is done (see max_votes_per_option)
                     if poll["pollmethod"] in ("Y", "N"):
@@ -164,6 +187,253 @@ class StopControl(CountdownControl, Action):
                     "abstain": str(option["A"]),
                 }
                 for _id, option in option_results.items()
+            ],
+        )
+        # set voted ids
+        voted_ids = results["user_ids"]
+        instance["voted_ids"] = voted_ids
+
+        # set votescast, votesvalid, votesinvalid
+        instance["votesvalid"] = str(votesvalid)
+        instance["votescast"] = str(Decimal("0.000000") + Decimal(len(voted_ids)))
+        instance["votesinvalid"] = "0.000000"
+
+        # set entitled users at stop.
+        instance["entitled_users_at_stop"] = Jsonb(
+            self.get_entitled_users(poll | instance, meeting)
+        )
+
+    def handle_stv_election(
+        self,
+        hopeful: list[int],
+        open_seats: int,
+        results: dict[str, Any],
+        instance: dict[str, Any],
+        poll: dict[str, Any],
+        meeting: dict[str, Any],
+    ):
+        ballots = results["votes"]
+        # assignment = self.datastore.get(poll["content_object_id"], ["open_posts"])
+        # numvotes = Decimal("0.000000") + poll["votesvalid"]
+        votesvalid = Decimal("0.000000")
+        # votescast = Decimal("0.000000") + len(ballots)
+        numseats = Decimal("0.000000") + open_seats
+        action_data = []
+        for b in ballots:
+            votesvalid += Decimal(b["weight"])
+            user_token = get_user_token()
+            vote_template: dict[str, str | int] = {"user_token": user_token}
+            if "vote_user_id" in b:
+                vote_template["user_id"] = b["vote_user_id"]
+            if "request_user_id" in b:
+                vote_template["delegated_user_id"] = b["request_user_id"]
+            for rank, c in enumerate(b["value"], start=1):
+                action_data.append(
+                    {
+                        "value": "Y",
+                        "option_id": c,
+                        "weight": f"{Decimal(1.000000):.6f}",
+                        "rank": rank,
+                        **vote_template,
+                    }
+                )
+
+        quota = (votesvalid / (numseats + 1)) + 1
+
+        weighted_ballots = map(
+            lambda b: {
+                "data": b,
+                "ranking": b["value"],
+                "weight": Decimal(b["weight"]),
+                "transfer_value": Decimal("1.000000"),
+            },
+            ballots,
+        )
+        elected = []
+        eliminated = []
+        id_exhausted = -1
+        candidate_vote_totals: dict[int, Decimal] = {
+            c: Decimal("0.000000") for c in hopeful
+        }
+        vote_buckets: dict[int, list[dict[str, Any]]] = defaultdict(lambda: [])
+
+        # Compute first preference totals
+        for ballot in weighted_ballots:
+            ranking = ballot["ranking"]
+            weight = ballot["weight"]
+
+            first_pref = ranking[0]
+            candidate_vote_totals[first_pref] += weight
+            vote_buckets[first_pref].append(ballot)
+
+            # user_token = get_user_token()
+            # vote_template: dict[str, str | int] = {"user_token": user_token}
+            # if "vote_user_id" in ballot["data"]:
+            #     vote_template["user_id"] = ballot["data"]["vote_user_id"]
+            # if "request_user_id" in ballot["data"]:
+            #     vote_template["delegated_user_id"] = ballot["data"]["request_user_id"]
+            # action_data.append(
+            #     {
+            #         "value": "Y",
+            #         "option_id": first_pref,
+            #         "weight": f"{weight:.6f}",
+            #         **vote_template,
+            #     }
+            # )
+
+        self.logger.debug(
+            f"There are {votesvalid} votes cast and {numseats} open seats. The quota is {quota}."
+        )
+        self.logger.debug(
+            f"The following candidates are standing for election: {hopeful}"
+        )
+
+        round = 0
+        while numseats - len(elected) > 0:
+            # Determine elected candidates, transfer surplus
+            round += 1
+            self.logger.debug(f"***** ROUND {round} *****")
+            candidates_sorted = sorted(
+                filter(lambda item: item[0] in hopeful, candidate_vote_totals.items()),
+                key=lambda item: item[1],
+                reverse=True,
+            )
+            self.logger.debug(f"Current standings: {candidates_sorted}")
+            self.logger.debug(
+                f"The election is for a total of {numseats} seats, and the following {len(elected)} candidates have been elected: {elected}. There are {numseats - len(elected)} open seats remaining."
+            )
+            candidate = 0
+            candidate_votes = 0
+
+            # TODO: Resolve ties
+            hopeful_winner = candidates_sorted[0]
+            self.logger.debug(
+                f"Candidate {hopeful_winner[0]} is in first place. Checking if candidate is past quota."
+            )
+            if hopeful_winner[1] >= quota:
+                candidate = hopeful_winner[0]
+                candidate_votes = hopeful_winner[1]
+                self.logger.debug(
+                    f"Candidate {hopeful_winner[0]} meets quota with {hopeful_winner[1]} votes. Proceeding with election."
+                )
+            # DEBUG ONLY
+            else:
+                self.logger.debug(
+                    f"With {hopeful_winner[1]} votes, candidate {hopeful_winner[0]} does not meet quota. Proceeding with elimination of last place candidate."
+                )
+
+            # DEBUG ONLY
+            if candidate:
+                self.logger.debug(f"Candidate being processed is {candidate}.")
+            else:
+                self.logger.debug(
+                    "No winner found. Proceeding with elimination of last place candidate."
+                )
+
+            # Candidate is elected
+            if candidate:
+                self.logger.debug(
+                    f"Candidate {candidate} is elected with {candidate_votes} votes."
+                )
+                elected.append(candidate)
+                hopeful.remove(candidate)
+                transfer_value = (candidate_votes - quota) / candidate_votes
+                for ballot in vote_buckets[candidate]:
+                    ballot["transfer_value"] *= transfer_value
+            # Nobody is elected; candidate is eliminated
+            else:
+                # But there aren't enough candidates left to eliminate! Everyone remaining in the election is elected.
+                if len(candidates_sorted) == (numseats - len(elected)):
+                    self.logger.debug(
+                        f"Election is exhausted. All remaining hopeful candidates {hopeful} are elected."
+                    )
+                    for c in hopeful:
+                        elected.append(c)
+                    hopeful.clear()
+                else:
+                    # TODO: Resolve ties
+                    # count = 1
+                    candidate = candidates_sorted[len(candidates_sorted) - 1][0]
+                    candidate_votes = candidates_sorted[len(candidates_sorted) - 1][1]
+                    # self.logger.debug(
+                    #     f"checking if candidate {candidate} is in hopefuls {hopeful}"
+                    # )
+                    # while candidate not in hopeful:
+                    #     count += 1
+                    #     candidate = candidates_sorted[len(candidates_sorted) - count]
+                    self.logger.debug(
+                        f"Candidate {candidate} does not meet quota with only {candidate_votes} votes and is eliminated."
+                    )
+                    eliminated.append(candidate)
+                    hopeful.remove(candidate)
+
+            while candidate != 0 and len(vote_buckets[candidate]) > 0:
+                ballot = vote_buckets[candidate].pop()
+                ranking = ballot["ranking"]
+                self.logger.debug(
+                    f"Transferring ballot {ranking}. Searching for next available preference."
+                )
+
+                n = 1
+                while n < len(ranking) and ranking[n] not in hopeful:
+                    self.logger.debug(
+                        f"Candidate {ranking[n]} is not in the running. Skipping to next preference."
+                    )
+                    n += 1
+
+                if n < len(ranking):
+                    orig_pref = ranking[0]
+                    next_pref = ranking[n]
+                    self.logger.debug(
+                        f"Next available preference found: candidate {next_pref}."
+                    )
+                    final_weight = ballot["weight"] * ballot["transfer_value"]
+
+                    ballot["ranking"] = ballot["ranking"][1:]
+                    candidate_vote_totals[next_pref] += final_weight
+                    self.logger.debug(
+                        f"Vote is transferred from candidate {orig_pref} to candidate {next_pref} at value {ballot['transfer_value']}."
+                    )
+                    vote_buckets[next_pref].append(ballot)
+
+                    # user_token = get_user_token()
+                    # vote_template: dict[str, str | int] = {"user_token": user_token}
+                    # if "vote_user_id" in ballot["data"]:
+                    #     vote_template["user_id"] = ballot["data"]["vote_user_id"]
+                    # if "request_user_id" in ballot["data"]:
+                    #     vote_template["delegated_user_id"] = ballot["data"][
+                    #         "request_user_id"
+                    #     ]
+                    # action_data.append(
+                    #     {
+                    #         "value": "Y",
+                    #         "option_id": first_pref,
+                    #         "weight": f"{final_weight:.6f}",
+                    #         **vote_template,
+                    #     }
+                    # )
+
+                else:
+                    self.logger.debug("No next preference found. Ballot is exhausted.")
+                    vote_buckets[id_exhausted].append(ballot)
+
+        self.logger.debug(
+            f"Election is completed. Candidates {elected} have been elected."
+        )
+        self.logger.debug(f"Final vote totals: {candidate_vote_totals}")
+
+        self.execute_other_action(VoteCreate, action_data)
+        # update results into option
+        self.execute_other_action(
+            OptionSetAutoFields,
+            [
+                {
+                    "id": _id,
+                    "yes": f"{votes:.6f}",
+                    "no": str(Decimal("0.000000")),
+                    "abstain": str(Decimal("0.000000")),
+                }
+                for _id, votes in candidate_vote_totals.items()
             ],
         )
         # set voted ids

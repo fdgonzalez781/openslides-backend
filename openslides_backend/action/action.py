@@ -317,6 +317,7 @@ class Action(BaseServiceProvider, metaclass=SchemaProvider):
         """
         Validates one instance of the action data according to schema class attribute.
         """
+        self.logger.debug(f"instance: {instance}")
         try:
             type(self).schema_validator(
                 {

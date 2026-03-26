@@ -306,6 +306,7 @@ class ActionHandler(BaseHandler):
 
         try:
             # with self.datastore.get_database_context():
+            self.logger.debug(f"Action is {action}")
             with make_span(self.env, "action.perform"):
                 write_request, results = action.perform(
                     action_data, self.user_id, internal=self.internal

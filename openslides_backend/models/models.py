@@ -3164,6 +3164,7 @@ class Vote(Model):
     )
     user_id = fields.RelationField(to={"user": "vote_ids"})
     delegated_user_id = fields.RelationField(to={"user": "delegated_vote_ids"})
+    rank = fields.IntegerField(constant=True)
     meeting_id = fields.RelationField(
         to={"meeting": "vote_ids"}, required=True, constant=True
     )
