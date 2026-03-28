@@ -61,6 +61,7 @@ class PollCreateAction(
             "global_no",
             "global_abstain",
             "onehundred_percent_base",
+            "quota",
             "votesvalid",
             "votesinvalid",
             "votescast",
@@ -210,6 +211,9 @@ class PollCreateAction(
             and instance.get("publish_immediately")
         ):
             instance["state"] = Poll.STATE_PUBLISHED
+
+        # set quota default
+        instance["quota"] = instance.get("quota", "0.000000")
 
         # set votescast, votesvalid, votesinvalid defaults
         for field in ("votescast", "votesvalid", "votesinvalid"):

@@ -2484,6 +2484,7 @@ class Poll(Model, PollModelMixin):
             ]
         },
     )
+    quota = fields.DecimalField()
     votesvalid = fields.DecimalField()
     votesinvalid = fields.DecimalField()
     votescast = fields.DecimalField()

@@ -445,6 +445,10 @@ class StopControl(CountdownControl, Action):
         instance["votescast"] = str(Decimal("0.000000") + Decimal(len(voted_ids)))
         instance["votesinvalid"] = "0.000000"
 
+        # set quota, round_by_round
+        instance["quota"] = str(f"{quota:.6f}")
+        # instance["round_by_round"] =
+
         # set entitled users at stop.
         instance["entitled_users_at_stop"] = Jsonb(
             self.get_entitled_users(poll | instance, meeting)
