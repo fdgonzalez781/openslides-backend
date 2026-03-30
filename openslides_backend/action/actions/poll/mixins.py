@@ -213,10 +213,7 @@ class StopControl(CountdownControl, Action):
         meeting: dict[str, Any],
     ):
         ballots = results["votes"]
-        # assignment = self.datastore.get(poll["content_object_id"], ["open_posts"])
-        # numvotes = Decimal("0.000000") + poll["votesvalid"]
         votesvalid = Decimal("0.000000")
-        # votescast = Decimal("0.000000") + len(ballots)
         numseats = Decimal("0.000000") + open_seats
         action_data = []
         for b in ballots:
@@ -256,6 +253,11 @@ class StopControl(CountdownControl, Action):
             c: Decimal("0.000000") for c in hopeful
         }
         vote_buckets: dict[int, list[dict[str, Any]]] = defaultdict(lambda: [])
+        round_by_round: dict[int, dict[int, Decimal]] = defaultdict(
+            lambda: defaultdict(lambda: Decimal("0.000000"))
+        )
+        # round_by_round: list[str] = []
+        round = 0
 
         # Compute first preference totals
         for ballot in weighted_ballots:
@@ -264,22 +266,9 @@ class StopControl(CountdownControl, Action):
 
             first_pref = ranking[0]
             candidate_vote_totals[first_pref] += weight
+            round_by_round[round][first_pref] += weight
+            # round_by_round.append(f"{round}/{first_pref}/{weight:.6f}")
             vote_buckets[first_pref].append(ballot)
-
-            # user_token = get_user_token()
-            # vote_template: dict[str, str | int] = {"user_token": user_token}
-            # if "vote_user_id" in ballot["data"]:
-            #     vote_template["user_id"] = ballot["data"]["vote_user_id"]
-            # if "request_user_id" in ballot["data"]:
-            #     vote_template["delegated_user_id"] = ballot["data"]["request_user_id"]
-            # action_data.append(
-            #     {
-            #         "value": "Y",
-            #         "option_id": first_pref,
-            #         "weight": f"{weight:.6f}",
-            #         **vote_template,
-            #     }
-            # )
 
         self.logger.debug(
             f"There are {votesvalid} votes cast and {numseats} open seats. The quota is {quota}."
@@ -288,7 +277,6 @@ class StopControl(CountdownControl, Action):
             f"The following candidates are standing for election: {hopeful}"
         )
 
-        round = 0
         while numseats - len(elected) > 0:
             # Determine elected candidates, transfer surplus
             round += 1
@@ -355,12 +343,6 @@ class StopControl(CountdownControl, Action):
                     # count = 1
                     candidate = candidates_sorted[len(candidates_sorted) - 1][0]
                     candidate_votes = candidates_sorted[len(candidates_sorted) - 1][1]
-                    # self.logger.debug(
-                    #     f"checking if candidate {candidate} is in hopefuls {hopeful}"
-                    # )
-                    # while candidate not in hopeful:
-                    #     count += 1
-                    #     candidate = candidates_sorted[len(candidates_sorted) - count]
                     self.logger.debug(
                         f"Candidate {candidate} does not meet quota with only {candidate_votes} votes and is eliminated."
                     )
@@ -391,27 +373,12 @@ class StopControl(CountdownControl, Action):
 
                     ballot["ranking"] = ballot["ranking"][1:]
                     candidate_vote_totals[next_pref] += final_weight
+                    round_by_round[round][next_pref] += final_weight
+                    # round_by_round.append(f"{round}/{next_pref}/{final_weight:.6f}")
                     self.logger.debug(
                         f"Vote is transferred from candidate {orig_pref} to candidate {next_pref} at value {ballot['transfer_value']}."
                     )
                     vote_buckets[next_pref].append(ballot)
-
-                    # user_token = get_user_token()
-                    # vote_template: dict[str, str | int] = {"user_token": user_token}
-                    # if "vote_user_id" in ballot["data"]:
-                    #     vote_template["user_id"] = ballot["data"]["vote_user_id"]
-                    # if "request_user_id" in ballot["data"]:
-                    #     vote_template["delegated_user_id"] = ballot["data"][
-                    #         "request_user_id"
-                    #     ]
-                    # action_data.append(
-                    #     {
-                    #         "value": "Y",
-                    #         "option_id": first_pref,
-                    #         "weight": f"{final_weight:.6f}",
-                    #         **vote_template,
-                    #     }
-                    # )
 
                 else:
                     self.logger.debug("No next preference found. Ballot is exhausted.")
@@ -447,7 +414,18 @@ class StopControl(CountdownControl, Action):
 
         # set quota, round_by_round
         instance["quota"] = str(f"{quota:.6f}")
-        # instance["round_by_round"] =
+
+        # process round_by_round to list[str]
+        round_by_round_str: list[str] = []
+        for single_round_results in round_by_round.items():
+            rnd = single_round_results[0]
+            # single_round_results is (int, dict[int, Decimal]) where each dict[int, Decimal] maps a candidate id to their results for that round
+            for result_per_candidate in single_round_results[1].items():
+                cand = result_per_candidate[0]
+                vts = result_per_candidate[1]
+                round_by_round_str.append(f"{rnd}/{cand}/{vts:.6f}")
+        instance["round_by_round"] = round_by_round_str
+        self.logger.debug(f"Round by round results: {round_by_round}")
 
         # set entitled users at stop.
         instance["entitled_users_at_stop"] = Jsonb(
